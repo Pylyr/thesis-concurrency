@@ -1,155 +1,120 @@
-from typing import Dict, Optional, List, Any, Tuple
+from typing import Dict, DefaultDict, Optional, List, Set, Any, Tuple
 from dataclasses import dataclass
-import nbimporter
-
-# These are special cases for the i/o operations on the register example
-
-
-class Call:
-    def __init__(self, threadno, func, args, start, end):
-        super().__init__()
-        self.threadno: int = threadno
-        self.func: str = func
-        self.args: List[Any] = args
-        self.start: float = start
-        self.end: float = end
-        self.order: Optional[int] = None
-
-    def __eq__(self, other: object):
-        if not isinstance(other, Call):
-            raise NotImplementedError
-        return (self.threadno, self.func, self.args, self.start, self.end, self.order) == (other.threadno, other.func, other.args, other.start, other.end, other.order)
-
-    def __hash__(self):
-        return hash((self.threadno, self.func, tuple(self.args), self.start, self.end, self.order))
-
-    def __str__(self):
-        return f'{self.func}({self.args})'
-
-    def exec(self, state: 'State') -> Tuple['State', Any]:
-        raise NotImplementedError
+from collections import defaultdict
+import bisect
+from classes import *
 
 
-class State:
-    def copy(self) -> 'State':
-        raise NotImplementedError
+def populate_call_bins(
+        spec: List[Call],
+        sort_by_var: DefaultDict[int, List[Call]],
+        true_cases: List[CallCAS],
+        false_cases: List[CallCAS]):
+    for c in spec:
+        if isinstance(c, (CallWrite, CallRead)):
+            sort_by_var[c.arg].append(c)
+        elif isinstance(c, CallCAS) and c.cond:
+            sort_by_var[c.swap].append(c)
+            sort_by_var[c.compare].append(c)
+            true_cases.append(c)
+        elif isinstance(c, CallCAS) and not c.cond:
+            false_cases.append(c)
 
 
-class History:
-    """Nice wrapper for a list of calls"""
-
-    def __init__(self, calls: List[Call]):
-        self.calls: List[Call] = calls
-
-    def __eq__(self, other: object):
-        if not isinstance(other, History):
-            raise NotImplementedError
-        return self.calls == other.calls
+def get_writes_per_var(sort_by_var: DefaultDict[int, List[Call]]):
+    return {var: next(c for _, c in enumerate(var_class) if isinstance(c, CallWrite)
+                      or (isinstance(c, CallCAS) and c.cond and c.swap == var)) for var, var_class in sort_by_var.items()}
 
 
-@dataclass
-class I:
+def basic_io_checks(sort_by_var: DefaultDict[int, List[Call]]):
     """
-    If normal, start = first return, end = last call\n
-    If reversed, start = last call, end = first return
+    check that there is only one write per variable
+    checks that the read doesn't end before the write starts
     """
-    start: float
-    end: float
-    reversed: bool = False
 
-
-@dataclass
-class StateIO(State):
-    value: Optional[int] = None
-
-    def copy(self):
-        return StateIO(value=self.value)
-
-
-class CallWrite(Call):
-    def __init__(self, threadno, arg: int, start, end):
-        self.arg = arg
-        super().__init__(threadno, "write", [arg], start, end)
-
-    def exec(self, state):
-        if not isinstance(state, StateIO):
-            raise Exception("State is not of type StateIO")
-        state.value = self.arg
-        return state, None
-
-
-class CallRead(Call):
-    def __init__(self, threadno, arg: int, start, end):
-        self.arg = arg
-        super().__init__(threadno, "read", [arg], start, end)
-
-    def exec(self, state):
-        if not isinstance(state, StateIO):
-            raise Exception("State is not of type StateIO")
-        if state.value is None:
+    for var, var_class in sort_by_var.items():
+        if sum([isinstance(c, CallWrite) or (isinstance(c, CallCAS) and c.cond and c.swap == var) for c in var_class]) != 1:
             return
-        if state.value != self.arg:
+
+    writes = get_writes_per_var(sort_by_var)
+
+    # check that the the first read doesn't end before the write starts
+    for var, var_class in sort_by_var.items():
+        write = writes[var]
+        if not all(
+                read.end > write.start for read in var_class
+                if not (isinstance(read, CallWrite) or (isinstance(read, CallCAS) and read.cond and read.swap == var))):
             return
-        return state, None
+
+    return writes
 
 
-class CallCAS(Call):
-    def __init__(self, threadno, compare: int, swap: int, cond: bool, start, end):
-        self.cond = cond
-        self.compare = compare
-        self.swap = swap
-        super().__init__(threadno, f"cas", [compare, swap, cond], start, end)
-
-    def __str__(self):
-        if self.cond:
-            return f"{self.compare} -> {self.swap}"
+def make_intervals(sort_by_var: DefaultDict[int, List[Call]]):
+    intervals: Dict[int, I] = {}
+    for var, var_class in sort_by_var.items():
+        i1 = min(c.end for c in var_class)
+        i2 = max(c.start for c in var_class)
+        if i1 < i2:
+            # No write/read happens in the interval
+            intervals[var] = I(i1, i2)
         else:
-            return f"!{self.compare}"
-
-    def exec(self, state):
-        if not isinstance(state, StateIO):
-            raise Exception("State is not of type StateIO")
-        if state.value is None:
-            return
-       # if cond is True, the value must be equal to compare
-        if self.cond:
-            if state.value != self.compare:
-                return
-            state.value = self.swap
-            return state, None
-        # if cond is False, the value must be different from compare
-        else:
-            if state.value == self.compare:
-                return
-            return state, None
+            intervals[var] = I(i2, i1, True)
+    return intervals
 
 
-# def make_intervals(sort_by_var):
-#     intervals: Dict[int, I] = {}
-#     for var, var_class in sort_by_var.items():
-#         i1 = min(c.end for c in var_class)
-#         i2 = max(c.start for c in var_class)
-#         if i1 < i2:
-#             # No write/read happens in the interval
-#             intervals[var] = I(i1, i2)
-#         else:
-#             intervals[var] = I(i2, i1, True)
+def make_blocks(sort_by_var: DefaultDict[int, List[Call]], intervals: Dict[int, I]):
+    graph: DefaultDict[int, List[int]] = defaultdict(list)
 
-#     return intervals
+    for var_i, interval_i in intervals.items():
+        i1, i2 = interval_i.start, interval_i.end
+        for var_j, interval_j in intervals.items():
+            j1, j2 = interval_j.start, interval_j.end
+            if not interval_i.reversed and not interval_j.reversed:
+                continue
+            elif not interval_i.reversed:
+                if j1 < i1 and j2 > i2:
+                    graph[var_i].append(var_j)
+            elif not interval_j.reversed:
+                if i1 < j1 and i2 > j2:
+                    graph[var_i].append(var_j)
+            else:
+                if i1 < j2 < i2 or j1 < i2 < j2:
+                    graph[var_i].append(var_j)
 
-inp1 = [(1, 2), (2, 1)]
-inp2 = [(1, 2), (2, 3), (3, 1)]
-inp3 = [(2, 1), (1, 3)]
-inp4 = [(1, 3), (2, 1)]
+    for key in sort_by_var:
+        bisect.insort(graph[key], key)
+
+    blocks: List[List[int]] = []
+    for block in graph.values():
+        if block not in blocks:
+            blocks.append(block)
+
+    blocks.sort(key=lambda x: max(intervals[v].start for v in x))
+
+    return blocks
 
 
-def has_loop(true_cases: List[CallCAS]):
+def basic_true_cas_checks(true_cases: List[CallCAS]):
+    """
+    checks that there are no loops, ex 1 -> 2, 2 -> 1
+    checks that there is only one root, ex 1 -> 2, 1 -> 3 is not allowed
+    """
     graph = {}
     for c in true_cases:
         if c.compare not in graph:
             graph[c.compare] = []
         graph[c.compare].append(c.swap)
 
+    if has_loop(graph):
+        return False
+
+    if multiple_roots(true_cases):
+        return False
+
+    return True
+
+
+def has_loop(graph: Dict[int, List[int]]):
     def dfs(node, visited):
         if node in visited:
             return True
@@ -165,3 +130,91 @@ def has_loop(true_cases: List[CallCAS]):
         if dfs(node, set()):
             return True
     return False
+
+
+def multiple_roots(true_cases: List[CallCAS]):
+    # If there is a node 3 -> 2, no other node can point from 3
+    origins = {c.compare for c in true_cases}
+    return len(origins) != len(true_cases)
+
+
+def io_check(intervals: Dict[int, I]):
+    for var in intervals:
+        same_var_interval = intervals[var]
+        last_call = same_var_interval.start if same_var_interval.reversed else same_var_interval.end
+        first_return = same_var_interval.end if same_var_interval.reversed else same_var_interval.start
+        for i_var, interval in intervals.items():
+            if i_var == var or interval.reversed:
+                continue
+            # observation 1
+            if first_return < interval.end and last_call > interval.start:
+                return False
+            # observation 2
+            if last_call > interval.start and first_return < interval.end:
+                return False
+
+    return True
+
+
+def topological_true_cas_sort(true_cases: List[CallCAS]):
+    """
+    sort the true cas calls in topological order
+    nodes can only have one child, so
+    1 -> 2, 1 -> 3 is not allowed
+
+
+    e.g. 
+    2 -> 3, 1 -> 2, 3 -> 4 => [1, 2, 3, 4]
+    """
+    graph: Dict[int, int] = {}
+    for c in true_cases:
+        graph[c.compare] = c.swap
+
+    var_order: List[int] = []
+    visited = set()
+
+    def dfs(node):
+        if node in visited:
+            return
+        visited.add(node)
+        if node in graph:
+            dfs(graph[node])
+        var_order.append(node)
+
+    for node in graph:
+        dfs(node)
+
+    indexed_var_order = {var: i for i, var in enumerate(reversed(var_order))}
+    true_cases.sort(key=lambda c: indexed_var_order[c.compare])
+
+
+def true_cas_intra_group_check(intervals: Dict[int, I], order: List[int]):
+    """
+    check that the true cas calls are in the right order
+    """
+    last_var = order[0]
+    last_interval = intervals[last_var]
+    for var in order[1:]:
+        interval = intervals[var]
+        if last_interval.reversed and interval.reversed:
+            # I~ J~
+            if last_interval.start > interval.end:
+                return False
+
+        elif last_interval.reversed:
+            # I~ J
+            if last_interval.start > interval.start:
+                return False
+
+        elif interval.reversed:
+            # I J~
+            if last_interval.end > interval.end:
+                return False
+        else:
+            # I J
+            if last_interval.end > interval.start:
+                return False
+        last_interval = interval
+        last_var = var
+
+    return True
