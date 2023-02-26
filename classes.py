@@ -3,7 +3,7 @@ from typing import Dict, Optional, List, Any, Tuple
 
 
 class Call:
-    def __init__(self, threadno, func, args, start, end):
+    def __init__(self, threadno: int, func: str, args: List[Any], start: float, end: float):
         super().__init__()
         self.threadno: int = threadno
         self.func: str = func
@@ -64,6 +64,18 @@ class I:
         self.end = end
         self.reversed = reversed
 
+    def intersects(self, other: 'I') -> bool:
+        return self.start <= other.end and self.end >= other.start
+
+    def contained_in(self, other: 'I') -> bool:
+        return self.start >= other.start and self.end <= other.end
+
+    def __repr__(self):
+        return f'{self.start} - {self.end}'
+
+    def __contains__(self, item: float):
+        return self.start <= item <= self.end
+
 # These are special cases for the queue example
 
 
@@ -76,7 +88,7 @@ class StateQueue(State):
 
 
 class CallEnq(Call):
-    def __init__(self, threadno, arg: int, start, end):
+    def __init__(self, threadno: int, arg: int, start: float, end: float):
         self.arg = arg
         super().__init__(threadno, "enq", [arg], start, end)
 
@@ -88,7 +100,7 @@ class CallEnq(Call):
 
 
 class CallDeq(Call):
-    def __init__(self, threadno, arg: int, start, end):
+    def __init__(self, threadno: int, arg: int, start: float, end: float):
         self.arg = arg
         super().__init__(threadno, "deq", [arg], start, end)
 
@@ -114,7 +126,7 @@ class StateIO(State):
 
 
 class CallWrite(Call):
-    def __init__(self, threadno, arg: int, start, end):
+    def __init__(self, threadno: int, arg: int, start: float, end: float):
         self.arg = arg
         super().__init__(threadno, "write", [arg], start, end)
 
@@ -126,7 +138,7 @@ class CallWrite(Call):
 
 
 class CallRead(Call):
-    def __init__(self, threadno, arg: int, start, end):
+    def __init__(self, threadno: int, arg: int, start: float, end: float):
         self.arg = arg
         super().__init__(threadno, "read", [arg], start, end)
 
@@ -141,7 +153,7 @@ class CallRead(Call):
 
 
 class CallCAS(Call):
-    def __init__(self, threadno, compare: int, swap: int, cond: bool, start, end):
+    def __init__(self, threadno: int, cond: bool, compare: int, swap: int, start: float, end: float):
         self.cond = cond
         self.compare = compare
         self.swap = swap

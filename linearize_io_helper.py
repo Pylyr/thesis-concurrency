@@ -162,7 +162,6 @@ def topological_true_cas_sort(true_cases: List[CallCAS]):
     nodes can only have one child, so
     1 -> 2, 1 -> 3 is not allowed
 
-
     e.g. 
     2 -> 3, 1 -> 2, 3 -> 4 => [1, 2, 3, 4]
     """
@@ -218,3 +217,44 @@ def true_cas_intra_group_check(intervals: Dict[int, I], order: List[int]):
         last_var = var
 
     return True
+
+
+# def f():
+    # available_writes: Set[CallWrite | CallCAS] = set()
+    # block_i = 0
+    # captured_write = None
+    # false_cases.sort(key=lambda x: x.start)
+    # while block_i < len(blocks):
+
+    #     # 1. clear the available_writes if we are in a new block
+    #     # 2. add the writes from the current block that started before the false cas return
+    #     # 3. we advance to the next block if false cas start is after the last write in the current block
+
+    #     block = blocks[block_i]
+    #     writes_in_block = {writes[var] for var in block if writes[var].start < false_cas.end}
+
+    #     if min((min(c.end for c in sort_by_var[var]) for var in block)) < false_cas.start:
+    #         available_writes.clear()
+    #         captured_write = None
+
+    #     available_writes.update(writes_in_block)
+
+    #     if len(writes_in_block) == 0:
+    #         block_i -= 1
+    #         break
+    #     elif len(writes_in_block) == len(block):
+    #         block_i += 1
+    #     else:
+    #         break
+
+    # if false_cas.compare in writes:
+    #     captured_write = writes[false_cas.compare]
+    #     available_writes.discard(captured_write)
+
+    # if not available_writes:
+    #     return false_cas.compare
+
+    #     if captured_write is not None and min(c.end for c in sort_by_var[captured_write.args[0]]) > false_cas.start:
+    #         available_writes.add(captured_write)
+
+    #     captured_write = None
