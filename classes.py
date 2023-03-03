@@ -64,19 +64,22 @@ class I:
         self.end = end
         self.reversed = reversed
 
-    def intersects(self, other: 'I') -> bool:
+    def isIntersecting(self, other: 'I') -> bool:
         return self.start <= other.end and self.end >= other.start
 
-    def contained_in(self, other: 'I') -> bool:
+    def isContainedIn(self, other: 'I') -> bool:
         return self.start >= other.start and self.end <= other.end
+
+    def intersection(self, other: 'I') -> 'I':
+        if not self.isIntersecting(other):
+            raise Exception(f'{self} and {other} do not intersect')
+        return I(max(self.start, other.start), min(self.end, other.end))
 
     def __repr__(self):
         return f'{self.start} - {self.end}'
 
     def __contains__(self, item: float):
         return self.start <= item <= self.end
-
-# These are special cases for the queue example
 
 
 @dataclass

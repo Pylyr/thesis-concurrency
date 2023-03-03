@@ -1,4 +1,4 @@
-from typing import List, Dict, Any, Optional, DefaultDict
+from typing import Dict, DefaultDict, Optional, List, Set, Any, Tuple
 from dataclasses import dataclass
 from collections import defaultdict
 import matplotlib.pyplot as plt
@@ -8,7 +8,9 @@ import copy
 import tqdm
 import pickle
 import import_ipynb
+import math
 import os
+import linearize_io_helper as io_helper
 
 
 def sort_by_thread(spec: List[Call]):
@@ -124,8 +126,6 @@ def generate_random_spec(n: int, m: int, p: int, ops: List[str]):
     the only constraint is that operations cannot overlap in time on the same thread
     """
 
-    print(f"generating spec with {n} threads, {m} operations, {p} variables"
-          f" and ops: {ops}")
     var_dict: DefaultDict[Any, bool] = defaultdict(lambda: False)
 
     threads: DefaultDict[int, List[Call]] = defaultdict(list)
@@ -162,7 +162,6 @@ def generate_random_spec(n: int, m: int, p: int, ops: List[str]):
                     start=start,
                     end=end))
         elif op == "cas" and var_dict[arg]:
-
             threads[thread].append(
                 CallCAS(
                     threadno=thread,
@@ -172,6 +171,7 @@ def generate_random_spec(n: int, m: int, p: int, ops: List[str]):
                     start=start,
                     end=end))
         elif op == "cas" and not var_dict[arg]:
+            continue
             var_dict[arg] = True
             var_dict[arg2] = True
             threads[thread].append(
@@ -187,32 +187,32 @@ def generate_random_spec(n: int, m: int, p: int, ops: List[str]):
     return [c for thread in threads.values() for c in thread]
 
 
-def generate_tests(filename: str, total=1000, success_percentage=0.2, n=3, m=8, p=4, ops=["io", "cas"]):
-    success = []
-    fail = []
+def generate_tests(
+        filename: str, total=1000, success_percentage=0.2, no_threads=3, no_operations=8,
+        no_variables=4, ops=["io", "cas"],
+        min_ops=math.inf, min_cas=math.inf, min_read=math.inf):
+    success = 0
+    fail = 0
     loading = tqdm.tqdm(total=total)
-    while loading.n < loading.total:
-        spec = generate_random_spec(n, m, p, ops)
-        # if there is not at least 2 cas operations, then we can't test the false case
-        if "cas" in ops and len([c for c in spec if isinstance(c, CallCAS)]) < 1:
-            continue
-        if len([c for c in spec if isinstance(c, CallRead)]) < 1:
-            continue
-        if len(spec) < 8:
-            continue
-        sol = linearize_generic(spec, StateIO())
-        if sol is None and len(fail) < total * (1 - success_percentage):
-            fail.append(spec)
-            loading.update()
-        elif sol is not None and len(success) < total * success_percentage:
-            success.append(spec)
-            loading.update()
-
     with open(filename, "wb") as f:
-        for spec in success:
-            pickle.dump((spec, True), f)
-        for spec in fail:
-            pickle.dump((spec, False), f)
+        while loading.n < loading.total:
+            spec = generate_random_spec(no_threads, no_operations, no_variables, ops)
+            if "cas" in ops and len([c for c in spec if isinstance(c, CallCAS)]) < min_cas:
+                continue
+            if len([c for c in spec if isinstance(c, CallRead)]) < min_read:
+                continue
+            if len(spec) < min_ops:
+                continue
+
+            sol = linearize_generic(spec, StateIO())
+            if sol is None and fail < total * (1 - success_percentage):
+                fail += 1
+                pickle.dump((spec, False), f)
+                loading.update()
+            elif sol is not None and success < total * success_percentage:
+                success += 1
+                pickle.dump((spec, True), f)
+                loading.update()
 
 
 def load_test(filename: str) -> List[Tuple[List[Call], bool]]:

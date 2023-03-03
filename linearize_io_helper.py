@@ -1,8 +1,7 @@
 from typing import Dict, DefaultDict, Optional, List, Set, Any, Tuple
-from dataclasses import dataclass
 from collections import defaultdict
-import bisect
 from classes import *
+from graph import *
 
 
 def populate_call_bins(
@@ -62,35 +61,71 @@ def make_intervals(sort_by_var: DefaultDict[int, List[Call]]):
     return intervals
 
 
-def make_blocks(sort_by_var: DefaultDict[int, List[Call]], intervals: Dict[int, I]):
-    graph: DefaultDict[int, List[int]] = defaultdict(list)
+def list_cycles(graph: Dict[int, List[int]]):
+    cycles: List[List[int]] = []
+    for var, neighbors in graph.items():
+        for neighbor in neighbors:
+            if neighbor in graph:
+                for neighbor_neighbor in graph[neighbor]:
+                    if neighbor_neighbor == var:
+                        cycles.append([var, neighbor])
+    return cycles
 
-    for var_i, interval_i in intervals.items():
-        i1, i2 = interval_i.start, interval_i.end
-        for var_j, interval_j in intervals.items():
-            j1, j2 = interval_j.start, interval_j.end
-            if not interval_i.reversed and not interval_j.reversed:
-                continue
-            elif not interval_i.reversed:
-                if j1 < i1 and j2 > i2:
-                    graph[var_i].append(var_j)
-            elif not interval_j.reversed:
-                if i1 < j1 and i2 > j2:
-                    graph[var_i].append(var_j)
-            else:
-                if i1 < j2 < i2 or j1 < i2 < j2:
-                    graph[var_i].append(var_j)
 
-    for key in sort_by_var:
-        bisect.insort(graph[key], key)
-
+def make_blocks(intervals: Dict[int, I]):
     blocks: List[List[int]] = []
-    for block in graph.values():
-        if block not in blocks:
-            blocks.append(block)
+    forward_intervals: Dict[int, I] = {var: interval for var, interval in intervals.items() if not interval.reversed}
+    reverse_intervals: Dict[int, I] = {var: interval for var, interval in intervals.items() if interval.reversed}
+
+    # Step 1: Skeleton. All forward intervals are in different blocks
+    for forward_var in forward_intervals:
+        blocks.append([forward_var])
+
+    # Step 2.1: Reversed intervals either contain a forward interval (same block)
+    reverse_joined: Set[int] = set()
+
+    for var, reverse_interval in reverse_intervals.items():
+
+        for forward_block in blocks:
+            forward_interval = intervals[forward_block[0]]
+            if forward_interval.isContainedIn(reverse_interval):
+                forward_block.append(var)
+                reverse_joined.add(var)
+
+    # Step 2.2: Label all the intersections of reversed intervals that are not contained in a forward interval
+
+    graph: Dict[int, List[int]] = defaultdict(list)
+    for var_i, interval_i in reverse_intervals.items():
+        for var_j, interval_j in reverse_intervals.items():
+
+            if var_i == var_j:
+                graph[var_i].append(var_j)
+                continue
+
+            if interval_i.isIntersecting(interval_j):
+                intersection = interval_i.intersection(interval_j)
+                for forward_block in blocks:
+                    forward_interval = intervals[forward_block[0]]
+                    if intersection.isContainedIn(forward_interval):
+                        break
+                else:
+                    graph[var_i].append(var_j)
+
+    # Step 2.3: Find cycles in the graph
+    cycles = find_cycles(graph)
+    non_cycle_edges = get_non_cycle_edges(graph, cycles)
+    new_blocks = cycles + non_cycle_edges
+
+    # Step 2.4: Remove blocks made only of reverse_joined variables
+    new_blocks = [block for block in new_blocks if not all(var in reverse_joined for var in block)]
+    blocks += new_blocks
+
+    # Step 2.4: All nodes that only intersect themselves make a block
+    for var in graph:
+        if graph[var] == [var] and var not in reverse_joined:
+            blocks.append([var])
 
     blocks.sort(key=lambda x: max(intervals[v].start for v in x))
-
     return blocks
 
 
@@ -217,44 +252,3 @@ def true_cas_intra_group_check(intervals: Dict[int, I], order: List[int]):
         last_var = var
 
     return True
-
-
-# def f():
-    # available_writes: Set[CallWrite | CallCAS] = set()
-    # block_i = 0
-    # captured_write = None
-    # false_cases.sort(key=lambda x: x.start)
-    # while block_i < len(blocks):
-
-    #     # 1. clear the available_writes if we are in a new block
-    #     # 2. add the writes from the current block that started before the false cas return
-    #     # 3. we advance to the next block if false cas start is after the last write in the current block
-
-    #     block = blocks[block_i]
-    #     writes_in_block = {writes[var] for var in block if writes[var].start < false_cas.end}
-
-    #     if min((min(c.end for c in sort_by_var[var]) for var in block)) < false_cas.start:
-    #         available_writes.clear()
-    #         captured_write = None
-
-    #     available_writes.update(writes_in_block)
-
-    #     if len(writes_in_block) == 0:
-    #         block_i -= 1
-    #         break
-    #     elif len(writes_in_block) == len(block):
-    #         block_i += 1
-    #     else:
-    #         break
-
-    # if false_cas.compare in writes:
-    #     captured_write = writes[false_cas.compare]
-    #     available_writes.discard(captured_write)
-
-    # if not available_writes:
-    #     return false_cas.compare
-
-    #     if captured_write is not None and min(c.end for c in sort_by_var[captured_write.args[0]]) > false_cas.start:
-    #         available_writes.add(captured_write)
-
-    #     captured_write = None
