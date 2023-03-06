@@ -75,6 +75,9 @@ class I:
             raise Exception(f'{self} and {other} do not intersect')
         return I(max(self.start, other.start), min(self.end, other.end))
 
+    def union(self, other: 'I') -> 'I':
+        return I(min(self.start, other.start), max(self.end, other.end))
+
     def __repr__(self):
         return f'{self.start} - {self.end}'
 

@@ -24,6 +24,10 @@ def visualize_history(spec: List[Call]):
     # make the graph big enough so that the labels don't overlap
     fig, ax = plt.subplots(figsize=(16, 10))
     threads = sort_by_thread(spec)
+    # name x-axis
+    ax.set_xlabel('Time')
+    # name y-axis
+    ax.set_ylabel('Thread')
 
     ax.set_yticks(range(max(threads.keys()) + 2))
     # leave margins on the top and bottom of the graph for the labels
@@ -165,8 +169,8 @@ def generate_random_spec(n: int, m: int, p: int, ops: List[str]):
             threads[thread].append(
                 CallCAS(
                     threadno=thread,
-                    compare=arg2,
-                    swap=arg,
+                    compare=arg,
+                    swap=arg2,
                     cond=False,
                     start=start,
                     end=end))
@@ -215,6 +219,15 @@ def generate_tests(
                 loading.update()
 
 
+def save_test(test: List[Tuple[List[Call], bool]], filename: str):
+    if not filename.endswith(".pkl"):
+        raise ValueError(f"File {filename} is not a pickle file")
+
+    with open(filename, "wb") as f:
+        for t in test:
+            pickle.dump(t, f)
+
+
 def load_test(filename: str) -> List[Tuple[List[Call], bool]]:
     if not os.path.exists(f"tests/{filename}"):
         raise FileNotFoundError(f"tests/{filename} not found")
@@ -230,3 +243,39 @@ def load_test(filename: str) -> List[Tuple[List[Call], bool]]:
             except EOFError:
                 break
     return test
+
+
+def str_specification(spec: List[Call]):
+    spec.sort(key=lambda x: x.start)
+    res = ""
+    symbol_dict = {
+        "CallCAS": "!",
+        "CallWrite": "+",
+        "CallRead": "-",
+    }
+    for c in spec:
+        print(f"{symbol_dict[c.__class__.__name__]}{c.args[0]} {c.start}-{c.end}")
+
+    return res
+
+
+def isIntervals_strictly_ordered(spec: List[Call]):
+    sort_by_var = defaultdict(list)
+    io_helper.populate_call_bins(spec, sort_by_var, [], [])
+    intervals = io_helper.make_intervals(sort_by_var)
+    for var_i, i in intervals.items():
+        for var_j, j in intervals.items():
+            if i.isIntersecting(j) and var_i != var_j:
+                return False
+    return True
+
+
+def isRead_before_cas(spec: List[Call]):
+    sort_by_var = defaultdict(list)
+    false_cases: List[CallCAS] = []
+    io_helper.populate_call_bins(spec, sort_by_var, [], false_cases)
+    for c in false_cases:
+        earliest_read = min((r.end for r in sort_by_var[c.compare] if isinstance(r, CallRead)), default=math.inf)
+        if c.start < earliest_read:
+            return False
+    return True

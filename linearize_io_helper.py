@@ -129,6 +129,17 @@ def make_blocks(intervals: Dict[int, I]):
     return blocks
 
 
+def is_strictly_before(var1: int, var2: int, blocks: List[List[int]]):
+    block1 = 0
+    block2 = 0
+    for i, block in enumerate(reversed(blocks)):
+        if var1 in block:
+            block1 = len(blocks) - i - 1
+        if var2 in block:
+            block2 = len(blocks) - i - 1
+    return block1 < block2
+
+
 def basic_true_cas_checks(true_cases: List[CallCAS]):
     """
     checks that there are no loops, ex 1 -> 2, 2 -> 1
@@ -252,3 +263,23 @@ def true_cas_intra_group_check(intervals: Dict[int, I], order: List[int]):
         last_var = var
 
     return True
+
+
+def ordAfter(blocks: List[List[int]], var1: int, var2: int):
+    """
+    returns true if latest block index of var1 is before earliest block index of var2
+    """
+    block1 = None
+    block2 = None
+    for i in range(len(blocks)):
+        if var1 in blocks[len(blocks) - i - 1]:
+            block1 = len(blocks) - i - 1
+            break
+    for i in range(len(blocks)):
+        if var2 in blocks[i]:
+            block2 = i
+            break
+    if block1 is None or block2 is None:
+        raise Exception("variable not found in blocks")
+
+    return block2 > block1
