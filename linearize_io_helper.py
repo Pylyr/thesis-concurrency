@@ -2,6 +2,7 @@ from typing import Dict, DefaultDict, Optional, List, Set, Any, Tuple
 from collections import defaultdict
 from classes import *
 from graph import *
+import math
 
 
 def populate_call_bins(
@@ -20,12 +21,12 @@ def populate_call_bins(
             false_cases.append(c)
 
 
-def get_writes_per_var(sort_by_var: DefaultDict[int, List[Call]]):
+def get_writes_per_var(sort_by_var: Dict[int, List[Call]]):
     return {var: next(c for _, c in enumerate(var_class) if isinstance(c, CallWrite)
                       or (isinstance(c, CallCAS) and c.cond and c.swap == var)) for var, var_class in sort_by_var.items()}
 
 
-def basic_io_checks(sort_by_var: DefaultDict[int, List[Call]]):
+def basic_io_checks(sort_by_var: Dict[int, List[Call]]):
     """
     check that there is only one write per variable
     checks that the read doesn't end before the write starts
@@ -48,7 +49,7 @@ def basic_io_checks(sort_by_var: DefaultDict[int, List[Call]]):
     return writes
 
 
-def make_intervals(sort_by_var: DefaultDict[int, List[Call]]):
+def make_intervals(sort_by_var: Dict[int, List[Call]]):
     intervals: Dict[int, I] = {}
     for var, var_class in sort_by_var.items():
         i1 = min(c.end for c in var_class)
@@ -129,17 +130,6 @@ def make_blocks(intervals: Dict[int, I]):
     return blocks
 
 
-def is_strictly_before(var1: int, var2: int, blocks: List[List[int]]):
-    block1 = 0
-    block2 = 0
-    for i, block in enumerate(reversed(blocks)):
-        if var1 in block:
-            block1 = len(blocks) - i - 1
-        if var2 in block:
-            block2 = len(blocks) - i - 1
-    return block1 < block2
-
-
 def basic_true_cas_checks(true_cases: List[CallCAS]):
     """
     checks that there are no loops, ex 1 -> 2, 2 -> 1
@@ -208,7 +198,7 @@ def topological_true_cas_sort(true_cases: List[CallCAS]):
     nodes can only have one child, so
     1 -> 2, 1 -> 3 is not allowed
 
-    e.g. 
+    e.g.
     2 -> 3, 1 -> 2, 3 -> 4 => [1, 2, 3, 4]
     """
     graph: Dict[int, int] = {}
@@ -233,7 +223,58 @@ def topological_true_cas_sort(true_cases: List[CallCAS]):
     true_cases.sort(key=lambda c: indexed_var_order[c.compare])
 
 
-def true_cas_intra_group_check(intervals: Dict[int, I], order: List[int]):
+def ordAfter(blocks: List[List[int]], var1: int, var2: int):
+    """
+    returns true if latest block index of var1 is before earliest block index of var2
+    """
+    block1 = None
+    block2 = None
+    for i in range(len(blocks)):
+        if var1 in blocks[len(blocks) - i - 1]:
+            block1 = len(blocks) - i - 1
+            break
+    for i in range(len(blocks)):
+        if var2 in blocks[i]:
+            block2 = i
+            break
+    if block1 is None or block2 is None:
+        raise Exception("variable not found in blocks")
+
+    return block2 > block1
+
+
+def isAny_cas_intersect_write(false_cases: List[CallCAS], writes: Dict[int, CallWrite | CallCAS]):
+    for c in false_cases:
+        for w in writes.values():
+            if I(c.start, c.end).isIntersecting(I(w.start, w.end)):
+                return True
+    return False
+
+
+def make_true_cas_var_groups(true_cases: List[CallCAS]):
+    true_cas_var_groups: List[List[int]] = []
+    for true_cas in true_cases:
+        for group in true_cas_var_groups:
+            if true_cas.compare == group[-1]:
+                group.append(true_cas.swap)
+                break
+        else:
+            true_cas_var_groups.append([true_cas.compare, true_cas.swap])
+    return true_cas_var_groups
+
+
+def make_true_cas_call_groups(sort_by_var: Dict[int, List[Call]], true_cas_var_groups: List[List[int]]):
+    true_cas_call_groups: List[List[Call]] = []
+    for group in true_cas_var_groups:
+        all_group_ops: List[Call] = []
+        for var in group:
+            all_group_ops.extend(sort_by_var[var])
+        all_group_ops = list(dict.fromkeys(all_group_ops))
+        true_cas_call_groups.append(all_group_ops)
+    return true_cas_call_groups
+
+
+def isValid_order(intervals: Dict[int, I], order: List[int]):
     """
     check that the true cas calls are in the right order
     """
@@ -265,21 +306,131 @@ def true_cas_intra_group_check(intervals: Dict[int, I], order: List[int]):
     return True
 
 
-def ordAfter(blocks: List[List[int]], var1: int, var2: int):
-    """
-    returns true if latest block index of var1 is before earliest block index of var2
-    """
-    block1 = None
-    block2 = None
-    for i in range(len(blocks)):
-        if var1 in blocks[len(blocks) - i - 1]:
-            block1 = len(blocks) - i - 1
-            break
-    for i in range(len(blocks)):
-        if var2 in blocks[i]:
-            block2 = i
-            break
-    if block1 is None or block2 is None:
-        raise Exception("variable not found in blocks")
+def intra_group_check(true_cas_var_groups: List[List[int]], true_cas_call_groups: List[List[Call]]):
+    for group_i in range(len(true_cas_var_groups)):
+        intra_group_bins = defaultdict(list)
+        populate_call_bins(true_cas_call_groups[group_i], intra_group_bins, [], [])
+        intra_group_intervals = make_intervals(intra_group_bins)
+        order = true_cas_var_groups[group_i]
+        if isValid_order(intra_group_intervals, order) is not True:
+            return False
+    return True
 
-    return block2 > block1
+
+def inter_group_check(sort_by_var: Dict[int, List[Call]], true_cas_var_groups: List[List[int]]):
+    for var_group in true_cas_var_groups:
+        var = var_group[0]
+        for other_var in var_group[1:]:
+            sort_by_var[var].extend(sort_by_var[other_var])
+            del sort_by_var[other_var]
+
+    intervals: Dict[int, I] = make_intervals(sort_by_var)
+
+    return io_check(intervals)
+
+
+def get_false_cas_resolvers(
+        sort_by_var: Dict[int, List[Call]],
+        false_cases: List[CallCAS],
+        blocks: List[List[int]],
+        writes: Dict[int, CallWrite | CallCAS],
+        intervals: Dict[int, I]):
+
+    false_cases.sort(key=lambda x: x.end)
+    false_cas_var_resolver: Dict[CallCAS, Set[int]] = {}
+    for false_cas in false_cases:
+        available_writes: List[int] = []
+        block_i = 0
+
+        while block_i < len(blocks):
+            block = blocks[block_i]
+
+            if min((min(c.end for c in sort_by_var[var]) for var in block)) < false_cas.start:
+                available_writes.clear()
+
+            writes_in_block = {var for var in block if writes[var].start < false_cas.end}
+
+            available_writes.extend(writes_in_block)
+
+            if len(writes_in_block) == 0:
+                break
+
+            line = 0
+            for var in writes_in_block:
+                interval = intervals[var]
+                if interval.reversed:
+                    line = max(line, interval.start)
+                else:
+                    line = max(line, interval.end)
+
+            if false_cas.end > line:
+                block_i += 1
+            else:
+                break
+
+        # if the false cas is fully contained in a forward interval then the only available write is of that interval
+        for var in available_writes.copy():
+            interval = intervals[var]
+            if interval.reversed:
+                continue
+            if I(false_cas.start, false_cas.end).isContainedIn(interval):
+                available_writes = [var]
+                break
+
+        false_cas_var_resolver[false_cas] = set(available_writes)
+        false_cas_var_resolver[false_cas].discard(false_cas.compare)
+
+    visited: Dict[int, I] = {}
+    for false_cas in false_cases:
+        if false_cas.compare not in visited and false_cas.compare in writes:
+            if false_cas.start > writes[false_cas.compare].end:
+                visited[false_cas.compare] = I(false_cas.end, math.inf)
+
+    for false_cas in false_cases:
+        for var in false_cas_var_resolver[false_cas].copy():
+            if var in visited:
+                if I(false_cas.start, false_cas.end).isContainedIn(visited[var]):
+                    false_cas_var_resolver[false_cas].remove(var)
+    return false_cas_var_resolver
+
+
+def false_cas_group_check(false_cas_var_resolver: Dict[CallCAS, Set[int]], writes: Dict[int, CallWrite | CallCAS]):
+    writes_ret = [0] + sorted([w.end for w in writes.values()]) + [math.inf]
+    writes_ret_i = 0
+    latest_write_ret: List[int] = []
+    false_cases = list(false_cas_var_resolver.keys())
+    false_cases.sort(key=lambda x: x.end)
+    for false_cas in false_cases:
+        while True:
+            if I(
+                false_cas.start, false_cas.end).isContainedIn(
+                I(writes_ret[writes_ret_i],
+                  writes_ret[writes_ret_i + 1])):
+                latest_write_ret.append(writes_ret_i)
+                break
+            else:
+                writes_ret_i += 1
+
+    false_cas_blocks_i: Dict[int, List[CallCAS]] = defaultdict(list)
+    for false_cas_i in range(len(false_cases)):
+        false_cas_blocks_i[latest_write_ret[false_cas_i]].append(false_cases[false_cas_i])
+
+    false_cas_blocks = list(false_cas_blocks_i.values())
+    for false_cas_block in false_cas_blocks:
+        false_cas_block_vars = set.intersection(*[false_cas_var_resolver[false_cas] for false_cas in false_cas_block])
+        if len(false_cas_block_vars) == 0:
+            return False
+
+
+def set_order(sort_by_var: Dict[int, List[Call]]):
+    # now we just need to set the order attribute of each call
+    intervals: Dict[int, I] = make_intervals(sort_by_var)
+    blocks = make_blocks(intervals)
+    order = 1
+    for block in blocks:
+        for var in block:
+            sort_by_var[var].sort(key=lambda x: -1 if isinstance(x, CallWrite)
+                                  or isinstance(x, CallCAS) and x.cond else x.start)
+            for call in sort_by_var[var]:
+                call.order = order
+                order += 1

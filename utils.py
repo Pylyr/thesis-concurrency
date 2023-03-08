@@ -279,3 +279,11 @@ def isRead_before_cas(spec: List[Call]):
         if c.start < earliest_read:
             return False
     return True
+
+
+def isAny_cas_intersect_write_comb(spec: List[Call]):
+    sort_by_var: DefaultDict[int, List[Call]] = defaultdict(list)
+    false_cases: List[CallCAS] = []
+    io_helper.populate_call_bins(spec, sort_by_var, [], false_cases)
+    writes = io_helper.get_writes_per_var(sort_by_var)
+    return io_helper.isAny_cas_intersect_write(false_cases, writes)
