@@ -3,6 +3,7 @@ from collections import defaultdict
 from classes import *
 from graph import *
 import math
+import copy
 
 
 def populate_call_bins(
@@ -22,7 +23,7 @@ def populate_call_bins(
 
 
 def get_writes_per_var(sort_by_var: Dict[int, List[Call]]):
-    return {var: next(c for _, c in enumerate(var_class) if isinstance(c, CallWrite)
+    return {var: next(c for c in var_class if isinstance(c, CallWrite)
                       or (isinstance(c, CallCAS) and c.cond and c.swap == var)) for var, var_class in sort_by_var.items()}
 
 
@@ -73,7 +74,7 @@ def list_cycles(graph: Dict[int, List[int]]):
     return cycles
 
 
-def make_blocks(intervals: Dict[int, I]):
+def make_blocks(intervals: Dict[int, I], true_cas_var_groups: List[List[int]]):
     blocks: List[List[int]] = []
     forward_intervals: Dict[int, I] = {var: interval for var, interval in intervals.items() if not interval.reversed}
     reverse_intervals: Dict[int, I] = {var: interval for var, interval in intervals.items() if interval.reversed}
@@ -127,6 +128,13 @@ def make_blocks(intervals: Dict[int, I]):
             blocks.append([var])
 
     blocks.sort(key=lambda x: max(intervals[v].start for v in x))
+
+    # Step 3: We need to further split the blocks if true cases are involved
+
+    for block in blocks:
+        count = sum([var in block for var in true_cas_var_groups])
+        assert count in (0, 1)
+
     return blocks
 
 
@@ -306,7 +314,8 @@ def isValid_order(intervals: Dict[int, I], order: List[int]):
     return True
 
 
-def intra_group_check(true_cas_var_groups: List[List[int]], true_cas_call_groups: List[List[Call]]):
+def intra_group_check(sort_by_var: Dict[int, List[Call]], true_cas_var_groups: List[List[int]]):
+    true_cas_call_groups = make_true_cas_call_groups(sort_by_var, true_cas_var_groups)
     for group_i in range(len(true_cas_var_groups)):
         intra_group_bins = defaultdict(list)
         populate_call_bins(true_cas_call_groups[group_i], intra_group_bins, [], [])
@@ -318,6 +327,8 @@ def intra_group_check(true_cas_var_groups: List[List[int]], true_cas_call_groups
 
 
 def inter_group_check(sort_by_var: Dict[int, List[Call]], true_cas_var_groups: List[List[int]]):
+    # we need a deep copy here
+    sort_by_var = copy.deepcopy(sort_by_var)
     for var_group in true_cas_var_groups:
         var = var_group[0]
         for other_var in var_group[1:]:
@@ -422,10 +433,10 @@ def false_cas_group_check(false_cas_var_resolver: Dict[CallCAS, Set[int]], write
             return False
 
 
-def set_order(sort_by_var: Dict[int, List[Call]]):
+def set_order(sort_by_var: Dict[int, List[Call]], true_cas_var_groups: List[List[int]]):
     # now we just need to set the order attribute of each call
     intervals: Dict[int, I] = make_intervals(sort_by_var)
-    blocks = make_blocks(intervals)
+    blocks = make_blocks(intervals, true_cas_var_groups)
     order = 1
     for block in blocks:
         for var in block:

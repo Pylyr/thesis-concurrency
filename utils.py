@@ -122,7 +122,9 @@ def linearize_generic(spec: List[Call], state: State):
     return ret
 
 
-def generate_random_spec(n: int, m: int, p: int, ops: List[str]):
+def generate_random_spec(
+        n: int, m: int, p: int, ops: List[str],
+        min_offset: int, max_offset: int, min_duration: int, max_duration: int):
     """
     n is the number of threads\n
     m is the number of operations\n
@@ -143,8 +145,8 @@ def generate_random_spec(n: int, m: int, p: int, ops: List[str]):
         else:
             start = threads[thread][-1].end
 
-        start += random.randint(0, 5) + random.random()
-        end = start + random.randint(1, 10) + random.random()
+        start += random.randint(min_offset, max_offset) + random.random()
+        end = start + random.randint(min_duration, max_duration) + random.random()
         arg = random.randint(0, p)
         arg2 = arg
         if op == "cas":
@@ -175,7 +177,6 @@ def generate_random_spec(n: int, m: int, p: int, ops: List[str]):
                     start=start,
                     end=end))
         elif op == "cas" and not var_dict[arg]:
-            continue
             var_dict[arg] = True
             var_dict[arg2] = True
             threads[thread].append(
@@ -194,13 +195,22 @@ def generate_random_spec(n: int, m: int, p: int, ops: List[str]):
 def generate_tests(
         filename: str, total=1000, success_percentage=0.2, no_threads=3, no_operations=8,
         no_variables=4, ops=["io", "cas"],
-        min_ops=math.inf, min_cas=math.inf, min_read=math.inf):
+        min_ops=math.inf, min_cas=math.inf, min_read=math.inf,
+        min_offset=1, max_offset=5, min_duration=1, max_duration=10):
     success = 0
     fail = 0
     loading = tqdm.tqdm(total=total)
-    with open(filename, "wb") as f:
+    with open(f"tests/{filename}", "wb") as f:
         while loading.n < loading.total:
-            spec = generate_random_spec(no_threads, no_operations, no_variables, ops)
+            spec = generate_random_spec(
+                n=no_threads,
+                m=no_operations,
+                p=no_variables,
+                ops=ops,
+                min_offset=min_offset,
+                max_offset=max_offset,
+                min_duration=min_duration,
+                max_duration=max_duration)
             if "cas" in ops and len([c for c in spec if isinstance(c, CallCAS)]) < min_cas:
                 continue
             if len([c for c in spec if isinstance(c, CallRead)]) < min_read:
@@ -223,7 +233,7 @@ def save_test(test: List[Tuple[List[Call], bool]], filename: str):
     if not filename.endswith(".pkl"):
         raise ValueError(f"File {filename} is not a pickle file")
 
-    with open(filename, "wb") as f:
+    with open(f"tests/{filename}", "wb") as f:
         for t in test:
             pickle.dump(t, f)
 
@@ -235,11 +245,13 @@ def load_test(filename: str) -> List[Tuple[List[Call], bool]]:
     if not filename.endswith(".pkl"):
         raise ValueError(f"File {filename} is not a pickle file")
 
+    loader = tqdm.tqdm()
     with open(f"tests/{filename}", "rb") as f:
         test = []
         while True:
             try:
                 test.append(pickle.load(f))
+                loader.update()
             except EOFError:
                 break
     return test
@@ -281,9 +293,11 @@ def isRead_before_cas(spec: List[Call]):
     return True
 
 
-def isAny_cas_intersect_write_comb(spec: List[Call]):
+def isAny_fcas_intersect_write_comb(spec: List[Call]):
     sort_by_var: DefaultDict[int, List[Call]] = defaultdict(list)
     false_cases: List[CallCAS] = []
     io_helper.populate_call_bins(spec, sort_by_var, [], false_cases)
+    if io_helper.basic_io_checks(sort_by_var) is None:
+        return False
     writes = io_helper.get_writes_per_var(sort_by_var)
     return io_helper.isAny_cas_intersect_write(false_cases, writes)
