@@ -4,6 +4,7 @@ from classes import *
 from graph import *
 import math
 import copy
+import networkx as nx
 
 
 def populate_call_bins(
@@ -82,58 +83,63 @@ def make_blocks(intervals: Dict[int, I], true_cas_var_groups: List[List[int]]):
     # Step 1: Skeleton. All forward intervals are in different blocks
     for forward_var in forward_intervals:
         blocks.append([forward_var])
-
     # Step 2.1: Reversed intervals either contain a forward interval (same block)
     reverse_joined: Set[int] = set()
-
+    # 0 = not marked
+    # 1 = marked (cannot have a block of its own)
+    isMarked: Dict[I, bool] = {interval: False for interval in reverse_intervals.values()}
     for var, reverse_interval in reverse_intervals.items():
-
         for forward_block in blocks:
             forward_interval = intervals[forward_block[0]]
             if forward_interval.isContainedIn(reverse_interval):
                 forward_block.append(var)
                 reverse_joined.add(var)
+                isMarked[reverse_interval] = True
 
-    # Step 2.2: Label all the intersections of reversed intervals that are not contained in a forward interval
-
-    graph: Dict[int, List[int]] = defaultdict(list)
-    for var_i, interval_i in reverse_intervals.items():
-        for var_j, interval_j in reverse_intervals.items():
-
-            if var_i == var_j:
-                graph[var_i].append(var_j)
+    # Step 2.2:
+    rev_intervals_map = {interval: var for var, interval in reverse_intervals.items()}
+    new_blocks: List[List[int]] = []
+    for interval_i in sorted(isMarked.copy(), key=lambda x: x.end):
+        intersection_vars: List[int] = [rev_intervals_map[interval_i]]
+        for interval_j in sorted(isMarked.copy(), key=lambda x: x.end):
+            if interval_i == interval_j:
                 continue
-
+            if interval_j.start > interval_i.end:
+                break
             if interval_i.isIntersecting(interval_j):
                 intersection = interval_i.intersection(interval_j)
-                for forward_block in blocks:
-                    forward_interval = intervals[forward_block[0]]
+                for forward_interval in forward_intervals.values():
                     if intersection.isContainedIn(forward_interval):
                         break
                 else:
-                    graph[var_i].append(var_j)
+                    intersection_vars.append(rev_intervals_map[interval_j])
 
-    # Step 2.3: Find cycles in the graph
-    cycles = find_cycles(graph)
-    non_cycle_edges = get_non_cycle_edges(graph, cycles)
-    new_blocks = cycles + non_cycle_edges
+        if not all(isMarked[intervals[v]] for v in intersection_vars):
+            new_blocks.append(intersection_vars)
 
-    # Step 2.4: Remove blocks made only of reverse_joined variables
-    new_blocks = [block for block in new_blocks if not all(var in reverse_joined for var in block)]
+        for v in intersection_vars:
+            isMarked[intervals[v]] = True
+
+        del isMarked[interval_i]
+
     blocks += new_blocks
-
-    # Step 2.4: All nodes that only intersect themselves make a block
-    for var in graph:
-        if graph[var] == [var] and var not in reverse_joined:
-            blocks.append([var])
 
     blocks.sort(key=lambda x: max(intervals[v].start for v in x))
 
     # Step 3: We need to further split the blocks if true cases are involved
+    # group_i = 0
+    # true_cas_vars = set().union(*true_cas_var_groups)
+    # split_blocks = []
 
-    for block in blocks:
-        count = sum([var in block for var in true_cas_var_groups])
-        assert count in (0, 1)
+    # for i, block in enumerate(blocks):
+    #     v = true_cas_var_groups[group_i][0]
+    #     if v in block:
+    #         pre_block = [[var for var in block if var not in true_cas_vars]]
+    #         split = [[var] for var in true_cas_var_groups[group_i]]
+    #         post_block = [[var for var in block if var in true_cas_vars and var not in true_cas_var_groups[group_i]]]
+    #         split_blocks += pre_block + split + post_block
+    #     else:
+    #         split_blocks.append(block)
 
     return blocks
 
@@ -431,6 +437,7 @@ def false_cas_group_check(false_cas_var_resolver: Dict[CallCAS, Set[int]], write
         false_cas_block_vars = set.intersection(*[false_cas_var_resolver[false_cas] for false_cas in false_cas_block])
         if len(false_cas_block_vars) == 0:
             return False
+    return True
 
 
 def set_order(sort_by_var: Dict[int, List[Call]], true_cas_var_groups: List[List[int]]):
