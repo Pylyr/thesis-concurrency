@@ -75,32 +75,47 @@ def list_cycles(graph: Dict[int, List[int]]):
     return cycles
 
 
-def make_blocks(intervals: Dict[int, I], true_cas_var_groups: List[List[int]]):
-    blocks: List[List[int]] = []
-    forward_intervals: Dict[int, I] = {var: interval for var, interval in intervals.items() if not interval.reversed}
-    reverse_intervals: Dict[int, I] = {var: interval for var, interval in intervals.items() if interval.reversed}
+def make_blocks(sort_by_var: Dict[int, List[Call]], intervals: Dict[int, I], true_cas_var_groups: List[List[int]]):
 
+    # Step 0: Initialize
+    # Step 0.1: Merge true cases
+    merged_intervals: Dict[Tuple[int] | int, I] = copy.deepcopy(intervals)  # type: ignore
+
+    for true_cas_group in true_cas_var_groups:
+        joined_ops = {true_cas_group[0]: [op for var in true_cas_group for op in sort_by_var[var]]}
+        intervals = make_intervals(joined_ops)
+        merged_intervals[tuple(true_cas_group)] = intervals[true_cas_group[0]]
+        for var in true_cas_group:
+            del merged_intervals[var]
+
+    blocks: List[List[Tuple[int] | int]] = []
+    forward_intervals: Dict[Tuple[int] | int, I] = {var: interval for var,
+                                                    interval in merged_intervals.items() if not interval.reversed}
+    reverse_intervals: Dict[Tuple[int] | int, I] = {
+        var: interval for var, interval in merged_intervals.items() if interval.reversed}
+    # print(forward_intervals)
+    # print(reverse_intervals)
     # Step 1: Skeleton. All forward intervals are in different blocks
     for forward_var in forward_intervals:
         blocks.append([forward_var])
-    # Step 2.1: Reversed intervals either contain a forward interval (same block)
-    reverse_joined: Set[int] = set()
+
+    # Step 2.1: Reversed intervals that contain a forward interval get added to the block and get marked.
+
     # 0 = not marked
     # 1 = marked (cannot have a block of its own)
     isMarked: Dict[I, bool] = {interval: False for interval in reverse_intervals.values()}
     for var, reverse_interval in reverse_intervals.items():
         for forward_block in blocks:
-            forward_interval = intervals[forward_block[0]]
+            forward_interval = merged_intervals[forward_block[0]]
             if forward_interval.isContainedIn(reverse_interval):
                 forward_block.append(var)
-                reverse_joined.add(var)
                 isMarked[reverse_interval] = True
 
-    # Step 2.2:
+    # Step 2.2: Clique problem in P time, no problemo
     rev_intervals_map = {interval: var for var, interval in reverse_intervals.items()}
-    new_blocks: List[List[int]] = []
+    new_blocks: List[List[Tuple[int] | int]] = []
     for interval_i in sorted(isMarked.copy(), key=lambda x: x.end):
-        intersection_vars: List[int] = [rev_intervals_map[interval_i]]
+        intersection_vars: List[Tuple[int] | int] = [rev_intervals_map[interval_i]]
         for interval_j in sorted(isMarked.copy(), key=lambda x: x.end):
             if interval_i == interval_j:
                 continue
@@ -114,17 +129,17 @@ def make_blocks(intervals: Dict[int, I], true_cas_var_groups: List[List[int]]):
                 else:
                     intersection_vars.append(rev_intervals_map[interval_j])
 
-        if not all(isMarked[intervals[v]] for v in intersection_vars):
+        if not all(isMarked[merged_intervals[v]] for v in intersection_vars):
             new_blocks.append(intersection_vars)
 
         for v in intersection_vars:
-            isMarked[intervals[v]] = True
+            isMarked[merged_intervals[v]] = True
 
         del isMarked[interval_i]
 
     blocks += new_blocks
 
-    blocks.sort(key=lambda x: max(intervals[v].start for v in x))
+    blocks.sort(key=lambda x: min(merged_intervals[v].end for v in x))
 
     # Step 3: We need to further split the blocks if true cases are involved
     # group_i = 0
@@ -349,7 +364,7 @@ def inter_group_check(sort_by_var: Dict[int, List[Call]], true_cas_var_groups: L
 def get_false_cas_resolvers(
         sort_by_var: Dict[int, List[Call]],
         false_cases: List[CallCAS],
-        blocks: List[List[int]],
+        blocks: List[List[Tuple[int] | int]],
         writes: Dict[int, CallWrite | CallCAS],
         intervals: Dict[int, I]):
 
@@ -358,19 +373,30 @@ def get_false_cas_resolvers(
     for false_cas in false_cases:
         available_writes: List[int] = []
         block_i = 0
-
         while block_i < len(blocks):
-            block = blocks[block_i]
+            merged_block = blocks[block_i]
+            block = _expand_list(merged_block)
 
             if min((min(c.end for c in sort_by_var[var]) for var in block)) < false_cas.start:
                 available_writes.clear()
 
             writes_in_block = {var for var in block if writes[var].start < false_cas.end}
+            true_cas_tuples = [t for t in merged_block if isinstance(t, tuple)]
+
+            for true_cas in true_cas_tuples:
+                cutoff_var = max(
+                    (var for var in true_cas if min(c.end for c in sort_by_var[var]) < false_cas.start),
+                    key=lambda x: true_cas.index(x), default=-1)
+                if cutoff_var == -1:
+                    continue
+                cutoff_i = true_cas.index(cutoff_var)
+                for var in true_cas[:cutoff_i]:
+                    writes_in_block.discard(var)
 
             available_writes.extend(writes_in_block)
 
-            if len(writes_in_block) == 0:
-                break
+            # if len(writes_in_block) == 0:
+            #     break
 
             line = 0
             for var in writes_in_block:
@@ -440,13 +466,23 @@ def false_cas_group_check(false_cas_var_resolver: Dict[CallCAS, Set[int]], write
     return True
 
 
+def _expand_list(l: List[Tuple[int] | int]) -> List[int]:
+    ret = []
+    for t in l:
+        if isinstance(t, tuple):
+            ret.extend(_expand_list(list(t)))
+        else:
+            ret.append(t)
+    return ret
+
+
 def set_order(sort_by_var: Dict[int, List[Call]], true_cas_var_groups: List[List[int]]):
     # now we just need to set the order attribute of each call
     intervals: Dict[int, I] = make_intervals(sort_by_var)
-    blocks = make_blocks(intervals, true_cas_var_groups)
+    blocks = make_blocks(sort_by_var, intervals, true_cas_var_groups)
     order = 1
     for block in blocks:
-        for var in block:
+        for var in _expand_list(block):
             sort_by_var[var].sort(key=lambda x: -1 if isinstance(x, CallWrite)
                                   or isinstance(x, CallCAS) and x.cond else x.start)
             for call in sort_by_var[var]:
