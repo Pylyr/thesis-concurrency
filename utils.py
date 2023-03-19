@@ -135,7 +135,8 @@ def generate_random_spec(
     var_dict: DefaultDict[Any, bool] = defaultdict(lambda: False)
 
     threads: DefaultDict[int, List[Call]] = defaultdict(list)
-    for _ in range(m):
+    m_counter = 0
+    while m_counter < m:
         thread = random.randint(1, n)
         op = random.choice(ops)
         start: float
@@ -189,13 +190,13 @@ def generate_random_spec(
                     end=end))
         else:
             raise NotImplementedError(f"Operation {op} not implemented")
+        m_counter += 1
     return [c for thread in threads.values() for c in thread]
 
 
 def generate_tests(
         filename: str, total=1000, success_percentage=0.2, no_threads=3, no_operations=8,
-        no_variables=4, ops=["io", "cas"],
-        min_ops=math.inf, min_cas=math.inf, min_read=math.inf,
+        no_variables=4, ops=["io", "cas"], min_cas=0, min_read=-0,
         min_offset=1, max_offset=5, min_duration=1, max_duration=10):
     success = 0
     fail = 0
@@ -215,7 +216,7 @@ def generate_tests(
                 continue
             if len([c for c in spec if isinstance(c, CallRead)]) < min_read:
                 continue
-            if len(spec) < min_ops:
+            if isAny_fcas_intersect_write_comb(spec):
                 continue
 
             sol = linearize_generic(spec, StateIO())

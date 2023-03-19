@@ -57,7 +57,6 @@ def make_intervals(sort_by_var: Dict[int, List[Call]]):
         i1 = min(c.end for c in var_class)
         i2 = max(c.start for c in var_class)
         if i1 < i2:
-            # No write/read happens in the interval
             intervals[var] = I(i1, i2)
         else:
             intervals[var] = I(i2, i1, True)
@@ -140,22 +139,6 @@ def make_blocks(sort_by_var: Dict[int, List[Call]], intervals: Dict[int, I], tru
     blocks += new_blocks
 
     blocks.sort(key=lambda x: min(merged_intervals[v].end for v in x))
-
-    # Step 3: We need to further split the blocks if true cases are involved
-    # group_i = 0
-    # true_cas_vars = set().union(*true_cas_var_groups)
-    # split_blocks = []
-
-    # for i, block in enumerate(blocks):
-    #     v = true_cas_var_groups[group_i][0]
-    #     if v in block:
-    #         pre_block = [[var for var in block if var not in true_cas_vars]]
-    #         split = [[var] for var in true_cas_var_groups[group_i]]
-    #         post_block = [[var for var in block if var in true_cas_vars and var not in true_cas_var_groups[group_i]]]
-    #         split_blocks += pre_block + split + post_block
-    #     else:
-    #         split_blocks.append(block)
-
     return blocks
 
 
@@ -164,13 +147,8 @@ def basic_true_cas_checks(true_cases: List[CallCAS]):
     checks that there are no loops, ex 1 -> 2, 2 -> 1
     checks that there is only one root, ex 1 -> 2, 1 -> 3 is not allowed
     """
-    graph = {}
-    for c in true_cases:
-        if c.compare not in graph:
-            graph[c.compare] = []
-        graph[c.compare].append(c.swap)
 
-    if has_loop(graph):
+    if has_loop(true_cases):
         return False
 
     if multiple_roots(true_cases):
@@ -179,7 +157,13 @@ def basic_true_cas_checks(true_cases: List[CallCAS]):
     return True
 
 
-def has_loop(graph: Dict[int, List[int]]):
+def has_loop(true_cases: List[CallCAS]):
+    graph = {}
+    for c in true_cases:
+        if c.compare not in graph:
+            graph[c.compare] = []
+        graph[c.compare].append(c.swap)
+
     def dfs(node, visited):
         if node in visited:
             return True
@@ -211,11 +195,7 @@ def io_check(intervals: Dict[int, I]):
         for i_var, interval in intervals.items():
             if i_var == var or interval.reversed:
                 continue
-            # observation 1
             if first_return < interval.end and last_call > interval.start:
-                return False
-            # observation 2
-            if last_call > interval.start and first_return < interval.end:
                 return False
 
     return True
@@ -348,7 +328,6 @@ def intra_group_check(sort_by_var: Dict[int, List[Call]], true_cas_var_groups: L
 
 
 def inter_group_check(sort_by_var: Dict[int, List[Call]], true_cas_var_groups: List[List[int]]):
-    # we need a deep copy here
     sort_by_var = copy.deepcopy(sort_by_var)
     for var_group in true_cas_var_groups:
         var = var_group[0]
@@ -389,6 +368,7 @@ def get_false_cas_resolvers(
                     key=lambda x: true_cas.index(x), default=-1)
                 if cutoff_var == -1:
                     continue
+
                 cutoff_i = true_cas.index(cutoff_var)
                 for var in true_cas[:cutoff_i]:
                     writes_in_block.discard(var)
@@ -476,6 +456,17 @@ def _expand_list(l: List[Tuple[int] | int]) -> List[int]:
     return ret
 
 
+def order_lambda(c: Call, v: int):
+    if isinstance(c, CallWrite):
+        return -1
+    elif isinstance(c, CallCAS) and c.cond is True:
+        if c.swap == v:
+            return -1
+        else:
+            return math.inf
+    return c.start
+
+
 def set_order(sort_by_var: Dict[int, List[Call]], true_cas_var_groups: List[List[int]]):
     # now we just need to set the order attribute of each call
     intervals: Dict[int, I] = make_intervals(sort_by_var)
@@ -483,8 +474,9 @@ def set_order(sort_by_var: Dict[int, List[Call]], true_cas_var_groups: List[List
     order = 1
     for block in blocks:
         for var in _expand_list(block):
-            sort_by_var[var].sort(key=lambda x: -1 if isinstance(x, CallWrite)
-                                  or isinstance(x, CallCAS) and x.cond else x.start)
+            sort_by_var[var].sort(key=lambda x: order_lambda(x, var))
             for call in sort_by_var[var]:
                 call.order = order
-                order += 1
+                print(f"Set order of {str(call)} to {order}")
+                if order_lambda(call, var) != math.inf:
+                    order += 1
